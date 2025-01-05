@@ -1,111 +1,154 @@
-#[derive(Debug, Clone)]
-struct Task {
-    id: i32,
-    title: String,
-    description: String,
-    is_completed: bool,
+mod file;
+mod task;
+
+use crate::file::{read_file, write_file};
+use crate::task::{NewTask, Task, TaskGettersSetters};
+use clap::{Parser, Subcommand};
+use std::alloc::System;
+use std::error::Error;
+use std::time::SystemTime;
+
+const FILE_PATH: &str = "./tasks.json";
+
+#[derive(Subcommand, Debug)]
+enum TaskAction {
+    GetAll,
+    GetById {
+        id: i64,
+    },
+    Add {
+        title: String,
+        description: String,
+        is_completed: Option<bool>,
+    },
+    UpdateStatus {
+        id: i64,
+        is_completed: Option<bool>,
+    },
+    Delete {
+        id: i64,
+    },
 }
 
+#[derive(Parser)]
+#[command(name = "todo-app")]
+#[command(about = "A simple todo application")]
 struct Cli {
-    pattern: String,
-    path: std::path::PathBuf,
+    #[command(subcommand)]
+    action: TaskAction,
 }
 
-fn get_all_tasks(all_tasks: &Vec<Task>) {
-    println!("Getting all tasks...");
+fn get_all_tasks() -> Result<(), Box<dyn std::error::Error>> {
+    let all_tasks = read_file(FILE_PATH)?;
 
-    for task in all_tasks {
-        println!("Task: {:?}", *task);
-    }
+    println!("All tasks {:?}", all_tasks);
+
+    Ok(())
 }
 
-fn get_task_by_id(all_tasks: &Vec<Task>, id: i32) -> Option<&Task> {
-    println!("Getting task by id {:?}...", id);
+fn get_task_by_id(id: i64) -> Result<Option<Task>, Box<dyn std::error::Error>> {
+    let all_tasks = read_file(FILE_PATH)?;
 
     for task in all_tasks {
-        if task.id == id {
-            println!("This is the task {:?}", task);
-            return Some(task);
+        if task.get_id() == id {
+            return Ok(Some(task));
         }
     }
 
-    println!("No task found for id {:?}", id);
-    None
+    Ok(None)
 }
 
-fn add_task(all_tasks: &mut Vec<Task>, task: &Task) {
-    println!("Adding a new task: {:?}", task);
+fn add_task(task: &Task) -> Result<(), Box<dyn std::error::Error>> {
+    let mut all_tasks = read_file(FILE_PATH)?;
+
     all_tasks.push(task.clone());
+
+    write_file(FILE_PATH, &all_tasks)
 }
 
-fn update_task<'a>(all_tasks: &'a mut Vec<Task>, updated_task: &Task) -> Option<&'a Task> {
-    println!("Updating task with id {:?}...", updated_task.id);
+fn update_task_status(id: i64, completed: bool) -> Result<(), Box<dyn std::error::Error>> {
+    match get_task_by_id(id) {
+        Ok(None) => {
+            println!("No task found with id {:?}", id);
+            return Ok(());
+        }
+        Err(err) => {
+            println!("Error: {:?}", err);
+            return Err("Error updating task".into());
+        }
+        _ => {}
+    }
 
-    for task in all_tasks {
-        if task.id == updated_task.id {
-            println!("This is the task {:?}", task);
-            *task = updated_task.clone();
-            return Some(task);
+    let mut all_tasks = read_file(FILE_PATH)?;
+
+    for task in all_tasks.iter_mut() {
+        if task.get_id() == id {
+            task.set_is_completed(completed);
         }
     }
 
-    println!("No task found for id {:?}", updated_task.id);
-    None
+    write_file(FILE_PATH, &all_tasks)?;
+
+    Ok(())
 }
 
-fn delete_task(all_tasks: &mut Vec<Task>, id: i32) {
-    println!("Deleting task with id {:?}...", id);
+fn delete_task(id: i64) -> Result<(), Box<dyn std::error::Error>> {
+    let mut all_tasks = read_file(FILE_PATH)?;
 
-    let original_length = all_tasks.len();
+    all_tasks.retain(|task| task.get_id() != id);
 
-    all_tasks.retain(|task| {
-        if task.id == id {
-            println!("This is the task {:?}", task);
-            false
-        } else {
-            true
-        }
-    });
+    write_file(FILE_PATH, &all_tasks)?;
 
-    if original_length == all_tasks.len() {
-        println!("No task found for id {:?}", id);
-    }
+    Ok(())
 }
 
 fn main() {
-    let mut all_tasks: Vec<Task> = Vec::new();
+    let args = Cli::parse();
 
-    get_all_tasks(&all_tasks);
-
-    add_task(
-        &mut all_tasks,
-        &Task {
-            id: 1,
-            title: "First".to_string(),
-            description: "This is the first task".to_string(),
-            is_completed: false,
+    match args.action {
+        TaskAction::GetAll => match get_all_tasks() {
+            Ok(_) => {}
+            Err(err) => {
+                println!("Error: {}", err);
+            }
         },
-    );
-
-    get_all_tasks(&all_tasks);
-
-    get_task_by_id(&all_tasks, 0);
-
-    get_task_by_id(&all_tasks, 1);
-
-    update_task(
-        &mut all_tasks,
-        &Task {
-            id: 1,
-            title: "Updated title".to_string(),
-            description: "Updated description".to_string(),
-            is_completed: true,
+        TaskAction::GetById { id } => match get_task_by_id(id) {
+            Ok(Some(task)) => println!("Task details {:?}", task),
+            Ok(None) => println!("No task found with id {:?}", id),
+            Err(err) => println!("Error: {}", err),
         },
-    );
+        TaskAction::Add {
+            title,
+            description,
+            is_completed,
+        } => {
+            let mut completed = false;
 
-    get_all_tasks(&all_tasks);
+            match is_completed {
+                Some(true) => completed = true,
+                _ => {}
+            }
 
-    delete_task(&mut all_tasks, 1);
+            let now = SystemTime::now();
+            let duration = now.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+            let epoch_seconds = duration.as_secs() as i64;
 
-    get_all_tasks(&all_tasks);
+            let new_task = Task::new(epoch_seconds, title, description, completed);
+
+            add_task(&new_task).unwrap_or_else(|err| println!("Error: {}", err));
+        }
+        TaskAction::UpdateStatus { id, is_completed } => {
+            let mut completed = false;
+
+            match is_completed {
+                Some(true) => completed = true,
+                _ => {}
+            }
+
+            update_task_status(id, completed).unwrap_or_else(|err| println!("Error: {}", err));
+        }
+        TaskAction::Delete { id } => {
+            delete_task(id).unwrap_or_else(|err| println!("Error: {}", err));
+        }
+    }
 }
